@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -74,29 +73,7 @@ func generateNewApple(s tcell.Screen, world *World) {
 	world.apple = Point{randX, randY}
 	s.SetContent(world.apple.x, world.apple.y, tcell.RuneDiamond, nil, Style)
 }
-func initScreen() tcell.Screen {
-	defStyle := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorReset)
-	s, err := tcell.NewScreen()
-	if err != nil {
-		log.Fatalf("%+v", err)
-	}
-	if err := s.Init(); err != nil {
-		log.Fatalf("%+v", err)
-	}
-	s.SetStyle(defStyle)
-	s.EnableMouse()
-	s.Clear()
-	return s
-}
-func initDataBase() *sqinn.Sqinn {
-	database := sqinn.MustLaunch(sqinn.Options{})
-	database.MustOpen("./SnakeDB.db")
-	database.ExecOne("CREATE TABLE SCORE_BOARD (score INTEGER,name VARCHAR )")
-	database.ExecOne("CREATE TABLE CURRENT_GAME (score INTEGER )")
-	database.ExecOne("CREATE TABLE SETTINGS (color VARCHAR )")
-	//database.MustExecOne(fmt.Sprintf("INSERT INTO SCORE_BOARD (score) VALUES (%d)", 0))
-	return database
-}
+
 func runSnakeGame() {
 	//init Screen
 	screen := initScreen()
@@ -128,32 +105,14 @@ func runSnakeGame() {
 			snakeManager.runInsertScoreboard()
 		case SCOREBOARD:
 			snakeManager.runScoreboard()
+		case SETTINGS:
+			snakeManager.runSettings()
 		case QUIT:
 			return
 		}
 	}
 }
-func getHighScore(dataBase *sqinn.Sqinn) int {
-	rows, err := dataBase.Query("SELECT score FROM SCORE_BOARD ORDER BY score DESC", nil, []byte{sqinn.ValInt})
-	if err == nil {
-		return 0
-	}
-	return rows[0].Values[0].AsInt()
-}
-func getCurrentScore(dataBase *sqinn.Sqinn) int {
-	rows := dataBase.MustQuery("SELECT score FROM CURRENT_GAME", nil, []byte{sqinn.ValInt})
-	return rows[0].Values[0].AsInt()
-}
-func registerCurrentGame(dataBase *sqinn.Sqinn, currentScore int) {
-	dataBase.MustExecOne(fmt.Sprintf("INSERT INTO CURRENT_GAME (score) VALUES (%d)", currentScore))
-}
-func deleteCurrentGame(dataBase *sqinn.Sqinn) {
-	dataBase.MustExecOne("DELETE FROM CURRENT_GAME")
-}
-func registerGameToScoreBoard(dataBase *sqinn.Sqinn, name string) {
-	dataBase.MustExecOne(fmt.Sprintf("INSERT INTO SCORE_BOARD (score,name) VALUES((SELECT score from CURRENT_GAME),'%s')", name))
-	deleteCurrentGame(dataBase)
-}
+
 func (world *World) snakeMoving(snakeManager *SnakeManager, wg *sync.WaitGroup, quit chan struct{}) {
 	screen := snakeManager.screen
 	for {
@@ -167,7 +126,7 @@ func (world *World) snakeMoving(snakeManager *SnakeManager, wg *sync.WaitGroup, 
 			screen.Show()
 			wg.Done()
 			if endGame {
-				registerCurrentGame(snakeManager.dataBase, world.snake.score)
+				setCurrentGameScore(snakeManager.dataBase, world.snake.score)
 				snakeManager.screenStatus = INSERT_SCOREBOARD
 				close(quit)
 			}
@@ -179,12 +138,13 @@ func (world *World) snakeMoving(snakeManager *SnakeManager, wg *sync.WaitGroup, 
 func (snakeManager *SnakeManager) runWorld() {
 	screen := snakeManager.screen
 	screen.Clear()
+	difficulty, size := getCurrentGameSettings(snakeManager.dataBase)
 	world := World{
-		border:           Border{point: Point{0, 0}, height: 30, weight: 30},
+		border:           Border{point: Point{0, 0}, height: 30 + 5*(size-1), weight: 30 + 5*(size-1)},
 		snake:            *newSnake(&Point{10, 10}, NORTH, 7),
-		scoreTextBox:     TextBox{text: "SCORE: 0", point: Point{1, 31}},
-		highScoreTextBox: TextBox{text: fmt.Sprintf("%s%d", "HIGH SCORE: ", getHighScore(snakeManager.dataBase)), point: Point{1, 32}},
-		delay:            time.Millisecond * 80}
+		scoreTextBox:     TextBox{text: "SCORE: 0", point: Point{1, 30 + 5*(size-1) + 1}},
+		highScoreTextBox: TextBox{text: fmt.Sprintf("%s%d", "HIGH SCORE: ", getHighScore(snakeManager.dataBase)), point: Point{1, 30 + 5*(size-1) + 2}},
+		delay:            time.Millisecond*120 - time.Millisecond*20*(time.Duration(difficulty-1))}
 	generateNewApple(screen, &world)
 	drawWorld(screen, &world)
 	screen.Show()
@@ -269,7 +229,6 @@ func (snakeManager *SnakeManager) runMainMenu() {
 				}
 			}
 		}
-
 	}
 }
 func (snakeManager *SnakeManager) runInsertScoreboard() {
@@ -277,7 +236,7 @@ func (snakeManager *SnakeManager) runInsertScoreboard() {
 	screen.Clear()
 	border := Border{point: Point{0, 0}, height: 30, weight: 30}
 	info := [2]TextBox{
-		TextBox{point: Point{8, 10}, text: fmt.Sprintf("Your Score: %d", getCurrentScore(snakeManager.dataBase))},
+		TextBox{point: Point{8, 10}, text: fmt.Sprintf("Your Score: %d", getCurrentGameScore(snakeManager.dataBase))},
 		TextBox{point: Point{8, 11}, text: "Enter Your Name:"},
 	}
 	for _, tBox := range info {
@@ -297,7 +256,6 @@ func (snakeManager *SnakeManager) runInsertScoreboard() {
 			switch ev.Key() {
 			case tcell.KeyEsc:
 				snakeManager.screenStatus = MAIN_MENU
-				deleteCurrentGame(snakeManager.dataBase)
 				return
 			case tcell.KeyEnter:
 				if name != "" {
@@ -328,18 +286,7 @@ func (snakeManager *SnakeManager) runInsertScoreboard() {
 		}
 	}
 }
-func drawScoreBoard(screen tcell.Screen, dataBase *sqinn.Sqinn) {
-	rows := dataBase.MustQuery("SELECT score,name FROM SCORE_BOARD ORDER BY score DESC LIMIT 10", nil, []byte{sqinn.ValInt, sqinn.ValText})
-	scoreText := TextBox{point: Point{5, 9}, text: "SCORE"}
-	nameText := TextBox{point: Point{14, 9}, text: "NAME"}
-	drawTextBox(screen, &scoreText)
-	drawTextBox(screen, &nameText)
 
-	for i, row := range rows {
-		drawTextBox(screen, &TextBox{point: *getNextPoint(&scoreText.point, SOUTH, i+2), text: fmt.Sprintf("%d", row.Values[0].AsInt())})
-		drawTextBox(screen, &TextBox{point: *getNextPoint(&nameText.point, SOUTH, i+2), text: row.Values[1].AsString()})
-	}
-}
 func (snakeManager *SnakeManager) runScoreboard() {
 	screen := snakeManager.screen
 	screen.Clear()
@@ -358,6 +305,53 @@ func (snakeManager *SnakeManager) runScoreboard() {
 		}
 	}
 }
+func (snakeManager *SnakeManager) runSettings() {
+	screen := snakeManager.screen
+	screen.Clear()
+	curDifficulty, curSize := getCurrentGameSettings(snakeManager.dataBase)
+	border := Border{point: Point{0, 0}, height: 30, weight: 30}
+	difficulty := TextBox{text: fmt.Sprintf("Difficulty: %d", curDifficulty), point: Point{5, 5}}
+	size := TextBox{text: fmt.Sprintf("Size: %d", curSize), point: Point{5, 7}}
+	drawBorder(screen, &border)
+	drawTextBox(screen, &difficulty)
+	drawTextBox(screen, &size)
+
+	///
+	for {
+		screen.Show()
+		ev := screen.PollEvent()
+		switch ev := ev.(type) {
+		case *tcell.EventKey:
+			if ev.Key() == tcell.KeyEscape {
+				snakeManager.screenStatus = MAIN_MENU
+				return
+			}
+			if ev.Key() == tcell.KeyEnter {
+				setCurrentGameSettings(snakeManager.dataBase, curDifficulty, curSize)
+				snakeManager.screenStatus = MAIN_MENU
+				return
+			}
+		case *tcell.EventMouse:
+			switch ev.Buttons() {
+			case tcell.Button1:
+				x, y := ev.Position()
+				clickedPoint := Point{x, y}
+				if difficulty.checkPointInTextBox(clickedPoint) {
+					curDifficulty = (curDifficulty)%3 + 1
+					difficulty.text = fmt.Sprintf("Difficulty: %d", curDifficulty)
+					drawTextBox(screen, &difficulty)
+				}
+				if size.checkPointInTextBox(clickedPoint) {
+					curSize = (curSize)%3 + 1
+					size.text = fmt.Sprintf("Size: %d", curSize)
+					drawTextBox(screen, &size)
+				}
+			}
+		}
+	}
+}
+
+// }
 func main() {
 
 	runSnakeGame()
