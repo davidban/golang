@@ -3,16 +3,34 @@ package main
 import (
 	//"fmt"
 
+	"fmt"
+	"log"
+
+	"github.com/cvilsmeier/sqinn-go/sqinn"
 	"github.com/gdamore/tcell/v2"
 )
 
 var Style = tcell.StyleDefault
 
+func initScreen() tcell.Screen {
+	defStyle := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorReset)
+	s, err := tcell.NewScreen()
+	if err != nil {
+		log.Fatalf("%+v", err)
+	}
+	if err := s.Init(); err != nil {
+		log.Fatalf("%+v", err)
+	}
+	s.SetStyle(defStyle)
+	s.EnableMouse()
+	s.Clear()
+	return s
+}
 func drawTextBox(s tcell.Screen, textBox *TextBox) {
 	row := textBox.point.y
 	col := textBox.point.x
 	for _, r := range []rune(textBox.text) {
-		s.SetContent(col, row, r, nil, Style)
+		s.SetContent(col, row, r, nil, Style.Bold(textBox.bold))
 		col++
 		if r == '\n' {
 			row++
@@ -75,4 +93,16 @@ func drawMainMenu(s tcell.Screen, menu *MainMenu) {
 	drawTextBox(s, &menu.newGame)
 	drawTextBox(s, &menu.settings)
 	drawTextBox(s, &menu.scoreBoard)
+}
+func drawScoreBoard(screen tcell.Screen, dataBase *sqinn.Sqinn) {
+	rows := dataBase.MustQuery("SELECT score,name FROM SCORE_BOARD ORDER BY score DESC LIMIT 10", nil, []byte{sqinn.ValInt, sqinn.ValText})
+	scoreText := TextBox{point: Point{5, 9}, text: "SCORE"}
+	nameText := TextBox{point: Point{14, 9}, text: "NAME"}
+	drawTextBox(screen, &scoreText)
+	drawTextBox(screen, &nameText)
+
+	for i, row := range rows {
+		drawTextBox(screen, &TextBox{point: *getNextPoint(&scoreText.point, SOUTH, i+2), text: fmt.Sprintf("%d", row.Values[0].AsInt())})
+		drawTextBox(screen, &TextBox{point: *getNextPoint(&nameText.point, SOUTH, i+2), text: row.Values[1].AsString()})
+	}
 }

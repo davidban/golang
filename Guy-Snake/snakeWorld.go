@@ -32,6 +32,7 @@ type Border struct {
 }
 type TextBox struct {
 	text  string
+	bold  bool
 	point Point
 }
 type World struct {
